@@ -1,33 +1,18 @@
 # vim:set ft= ts=4 sw=4 et:
 
-use Test::Nginx::Socket::Lua;
-use Cwd qw(cwd);
+use t::Test;
 
 repeat_each(2);
 
 plan tests => repeat_each() * (3 * blocks());
-
-my $pwd = cwd();
-
-our $HttpConfig = qq{
-    lua_package_path "$pwd/lib/?.lua;;;";
-    lua_package_cpath "/usr/local/openresty-debug/lualib/?.so;/usr/local/openresty/lualib/?.so;;";
-};
-
-$ENV{TEST_NGINX_RESOLVER} = '8.8.8.8';
-$ENV{TEST_NGINX_REDIS_PORT} ||= 6379;
-
-no_long_string();
-#no_diff();
 
 run_tests();
 
 __DATA__
 
 === TEST 1: basic
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -55,9 +40,6 @@ __DATA__
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 ["OK","an animal","OK","hello"]
 ["OK","an animal","OK","hello"]
@@ -67,9 +49,8 @@ GET /t
 
 
 === TEST 2: cancel automatically
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -102,9 +83,6 @@ GET /t
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 ["OK","an animal","OK","hello"]
 ["OK","an animal","OK","hello"]
@@ -114,9 +92,8 @@ GET /t
 
 
 === TEST 3: cancel explicitly
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -159,9 +136,6 @@ GET /t
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 flushall: OK
 ["OK","an animal","OK","hello"]
@@ -172,9 +146,8 @@ flushall: OK
 
 
 === TEST 4: mixed
---- http_config eval: $::HttpConfig
---- config
-    location /test {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -221,7 +194,7 @@ flushall: OK
 
             for i, res in ipairs(results) do
                 if type(res) == "table" then
-                    if not res[1] then
+                    if res[1] == false then
                         ngx.say("failed to run command ", i, ": ", res[2])
                     else
                         ngx.say("cmd ", i, ": ", res)
@@ -247,9 +220,6 @@ flushall: OK
             --     return
             -- end
         ';
-    }
---- request
-    GET /test
 --- response_body
 set result: OK
 dog: an aniaml
@@ -260,3 +230,65 @@ cmd 4: Bob
 --- no_error_log
 [error]
 
+
+
+=== TEST 5: redis return error in pipeline
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua '
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", 6379)
+            if not ok then
+                ngx.say("failed to connect: ", err)
+                return
+            end
+
+            local res, err = red:del("dog")
+            if not res then
+                ngx.say("failed to del dog: ", err)
+                return
+            end
+
+            red:init_pipeline()
+            red:hkeys("dog")
+            red:set("dog", "an animal")
+            red:hkeys("dog")
+            red:get("dog")
+            local results, err = red:commit_pipeline()
+            if not results then
+                ngx.say("failed to commit the pipelined requests: ", err)
+                return
+            end
+
+            for i, res in ipairs(results) do
+                if type(res) == "table" then
+                    if res[1] == false then
+                        ngx.say("failed to run command ", i, ": ", res[2])
+                    else
+                        ngx.say("cmd ", i, ": ", res)
+                    end
+                else
+                    -- process the scalar value
+                    ngx.say("cmd ", i, ": ", res)
+                end
+            end
+
+            -- put it into the connection pool of size 100,
+            -- with 0 idle timeout
+            local ok, err = red:set_keepalive(0, 100)
+            if not ok then
+                ngx.say("failed to set keepalive: ", err)
+                return
+            end
+        ';
+--- response_body
+cmd 1: 
+cmd 2: OK
+failed to run command 3: WRONGTYPE Operation against a key holding the wrong kind of value
+cmd 4: an animal
+--- no_error_log
+[error]

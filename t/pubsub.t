@@ -1,33 +1,18 @@
 # vim:set ft= ts=4 sw=4 et:
 
-use Test::Nginx::Socket::Lua;
-use Cwd qw(cwd);
+use t::Test;
 
 repeat_each(2);
 
 plan tests => repeat_each() * (3 * blocks());
-
-my $pwd = cwd();
-
-our $HttpConfig = qq{
-    lua_package_path "$pwd/lib/?.lua;;";
-    lua_package_cpath "/usr/local/openresty-debug/lualib/?.so;/usr/local/openresty/lualib/?.so;;";
-};
-
-$ENV{TEST_NGINX_RESOLVER} = '8.8.8.8';
-$ENV{TEST_NGINX_REDIS_PORT} ||= 6379;
-
-no_long_string();
-#no_diff();
 
 run_tests();
 
 __DATA__
 
 === TEST 1: single channel
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local cjson = require "cjson"
             local redis = require "resty.redis"
@@ -77,9 +62,6 @@ __DATA__
             red:close()
             red2:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 1: subscribe: ["subscribe","dog",1]
 2: publish: 1
@@ -90,10 +72,9 @@ GET /t
 
 
 === TEST 2: single channel (retry read_reply() after timeout)
---- http_config eval: $::HttpConfig
---- config
+--- global_config eval: $::GlobalConfig
+--- server_config
     lua_socket_log_errors off;
-    location /t {
         content_by_lua '
             local cjson = require "cjson"
             local redis = require "resty.redis"
@@ -170,9 +151,6 @@ GET /t
             red:close()
             red2:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 1: subscribe: ["subscribe","dog",1]
 1: failed to read reply: timeout
@@ -180,16 +158,15 @@ GET /t
 1: unsubscribe: ["unsubscribe","dog",0]
 2: publish: 0
 1: failed to read reply: not subscribed
-1: unsubscribe: ["unsubscribe","dog",0]
+1: failed to unsubscribe: not subscribed
 --- no_error_log
 [error]
 
 
 
 === TEST 3: multiple channels
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         lua_socket_log_errors off;
         content_by_lua '
             local cjson = require "cjson"
@@ -279,17 +256,14 @@ GET /t
             red:close()
             red2:close()
         ';
-    }
---- request
-GET /t
 --- response_body_like chop
 ^1: subscribe dog: \["subscribe","dog",1\]
 1: subscribe cat: \["subscribe","cat",2\]
 2: publish: 1
 1: receive: \["message","dog","Hello"\]
 1: failed to read reply: timeout
-1: unsubscribe: \["unsubscribe","(?:cat|dog)",1\]
-1: receive: \["unsubscribe","(?:dog|cat)",0\]
+1: unsubscribe: \[\["unsubscribe","(?:cat|dog)",1\],\["unsubscribe","(?:cat|dog)",0\]\]
+1: failed to read reply: not subscribed
 1: failed to read reply: not subscribed$
 
 --- no_error_log
@@ -298,10 +272,9 @@ GET /t
 
 
 === TEST 4: call subscribe after read_reply() times out
---- http_config eval: $::HttpConfig
---- config
+--- global_config eval: $::GlobalConfig
+--- server_config
     lua_socket_log_errors off;
-    location /t {
         content_by_lua '
             local cjson = require "cjson"
             local redis = require "resty.redis"
@@ -354,9 +327,6 @@ GET /t
             red:close()
             red2:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 1: subscribe: ["subscribe","dog",1]
 1: failed to read reply: timeout
@@ -368,10 +338,9 @@ GET /t
 
 
 === TEST 5: call set_keepalive in subscribed mode (previous read_reply calls timed out)
---- http_config eval: $::HttpConfig
---- config
+--- global_config eval: $::GlobalConfig
+--- server_config
     lua_socket_log_errors off;
-    location /t {
         content_by_lua '
             local cjson = require "cjson"
             local redis = require "resty.redis"
@@ -424,9 +393,6 @@ GET /t
             red:close()
             red2:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 1: subscribe: ["subscribe","dog",1]
 1: failed to read reply: timeout
@@ -438,10 +404,9 @@ GET /t
 
 
 === TEST 6: call set_keepalive in subscribed mode
---- http_config eval: $::HttpConfig
---- config
+--- global_config eval: $::GlobalConfig
+--- server_config
     lua_socket_log_errors off;
-    location /t {
         content_by_lua '
             local cjson = require "cjson"
             local redis = require "resty.redis"
@@ -482,9 +447,6 @@ GET /t
             red:close()
             red2:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 1: subscribe: ["subscribe","dog",1]
 1: failed to set keepalive: subscribed state
@@ -494,10 +456,9 @@ GET /t
 
 
 === TEST 7: call set_keepalive in unsubscribed mode
---- http_config eval: $::HttpConfig
---- config
+--- global_config eval: $::GlobalConfig
+--- server_config
     lua_socket_log_errors off;
-    location /t {
         content_by_lua '
             local cjson = require "cjson"
             local redis = require "resty.redis"
@@ -546,9 +507,6 @@ GET /t
             red:close()
             red2:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 1: subscribe: ["subscribe","dog",1]
 1: unsubscribe: ["unsubscribe","dog",0]
@@ -557,3 +515,415 @@ GET /t
 --- no_error_log
 [error]
 
+
+
+=== TEST 8: mix read_reply and other commands
+--- global_config eval: $::GlobalConfig
+--- server_config
+        lua_socket_log_errors off;
+        content_by_lua '
+            local cjson = require "cjson"
+            local redis = require "resty.redis"
+
+            local red = redis:new()
+            local red2 = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+            red2:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("1: failed to connect: ", err)
+                return
+            end
+
+            ok, err = red2:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("2: failed to connect: ", err)
+                return
+            end
+
+            res, err = red:subscribe("dog")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+                return
+            end
+
+            res, err = red2:publish("dog", "Hello")
+            if not res then
+                ngx.say("2: failed to publish: ", err)
+                return
+            end
+
+            res, err = red:ping()
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+                return
+            end
+
+            res, err = red2:publish("dog", "World")
+            if not res then
+                ngx.say("2: failed to publish: ", err)
+                return
+            end
+
+            res, err = red:read_reply()
+            if not res then
+                ngx.say("1: failed to read reply: ", err)
+            else
+                ngx.say("1: receive: ", cjson.encode(res))
+            end
+
+            res, err = red:read_reply()
+            if not res then
+                ngx.say("1: failed to read reply: ", err)
+            else
+                ngx.say("1: receive: ", cjson.encode(res))
+            end
+
+            res, err = red:unsubscribe()
+            if not res then
+                ngx.say("1: failed to unscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            red:set_timeout(1) -- 1s
+            res, err = red:read_reply()
+            if not res then
+                ngx.say("1: failed to read reply: ", err)
+            else
+                ngx.say("1: receive: ", cjson.encode(res))
+            end
+
+            red:close()
+            red2:close()
+        ';
+--- request
+GET /t
+--- response_body_like chop
+1: receive: \["message","dog","Hello"\]
+1: receive: \["message","dog","World"\]
+1: unsubscribe: \["unsubscribe","dog",0\]
+1: failed to read reply: not subscribed$
+
+--- no_error_log
+[error]
+
+
+
+=== TEST 9: multiple subscribe
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local cjson = require "cjson"
+            local redis = require "resty.redis"
+
+            local red = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("1: failed to connect: ", err)
+                return
+            end
+
+            local res, err = red:subscribe("dog", "cat")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+            else
+                ngx.say("1: subscribe: ", cjson.encode(res))
+            end
+
+            res, err = red:unsubscribe("dog")
+            if not res then
+                ngx.say("1: failed to unsubscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            res, err = red:unsubscribe("cat")
+            if not res then
+                ngx.say("1: failed to unsubscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            red:close()
+        }
+--- response_body
+1: subscribe: [["subscribe","dog",1],["subscribe","cat",2]]
+1: unsubscribe: ["unsubscribe","dog",1]
+1: unsubscribe: ["unsubscribe","cat",0]
+--- no_error_log
+[error]
+
+
+
+=== TEST 10: multiple unsubscribe
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local cjson = require "cjson"
+            local redis = require "resty.redis"
+
+            local red = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("1: failed to connect: ", err)
+                return
+            end
+
+            local res, err = red:subscribe("dog")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+                return
+            end
+
+            res, err = red:subscribe("cat")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+                return
+            end
+
+            res, err = red:unsubscribe()
+            if not res then
+                ngx.say("1: failed to unscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            red:close()
+        }
+--- response_body_like
+^1: unsubscribe: \[\["unsubscribe","(?:cat|dog)",1\],\["unsubscribe","(?:cat|dog)",0\]\]$
+--- no_error_log
+[error]
+
+
+
+=== TEST 11: multiple psubscribe
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local cjson = require "cjson"
+            local redis = require "resty.redis"
+
+            local red = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("1: failed to connect: ", err)
+                return
+            end
+
+            local res, err = red:psubscribe("dog", "cat")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+            else
+                ngx.say("1: subscribe: ", cjson.encode(res))
+            end
+
+            res, err = red:punsubscribe("dog")
+            if not res then
+                ngx.say("1: failed to unsubscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            res, err = red:punsubscribe("cat")
+            if not res then
+                ngx.say("1: failed to unsubscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            red:close()
+        }
+--- response_body
+1: subscribe: [["psubscribe","dog",1],["psubscribe","cat",2]]
+1: unsubscribe: ["punsubscribe","dog",1]
+1: unsubscribe: ["punsubscribe","cat",0]
+--- no_error_log
+[error]
+
+
+
+=== TEST 12: multiple punsubscribe
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local cjson = require "cjson"
+            local redis = require "resty.redis"
+
+            local red = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("1: failed to connect: ", err)
+                return
+            end
+
+            local res, err = red:psubscribe("dog")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+                return
+            end
+
+            res, err = red:psubscribe("cat")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+                return
+            end
+
+            res, err = red:punsubscribe()
+            if not res then
+                ngx.say("1: failed to unscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            red:close()
+        }
+--- response_body_like
+^1: unsubscribe: \[\["punsubscribe","(?:cat|dog)",1\],\["punsubscribe","(?:cat|dog)",0\]\]$
+--- no_error_log
+[error]
+
+
+
+=== TEST 13: mix read_reply, subscribe, and psubscribe
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local cjson = require "cjson"
+            local redis = require "resty.redis"
+
+            local red = redis:new()
+            local red2 = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+            red2:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("1: failed to connect: ", err)
+                return
+            end
+
+            ok, err = red2:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("2: failed to connect: ", err)
+                return
+            end
+
+            local res, err = red:subscribe("two")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+                return
+            end
+
+            res, err = red:psubscribe("t*o")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+                return
+            end
+
+            res, err = red2:publish("two", "foo")
+            if not res then
+                ngx.say("2: failed to publish: ", err)
+                return
+            end
+
+            res, err = red2:publish("too", "bar")
+            if not res then
+                ngx.say("2: failed to publish: ", err)
+                return
+            end
+
+            res, err = red2:publish("too", "baz")
+            if not res then
+                ngx.say("2: failed to publish: ", err)
+                return
+            end
+
+            res, err = red:read_reply()
+            if not res then
+                ngx.say("1: failed to read reply: ", err)
+            else
+                ngx.say("1: receive: ", cjson.encode(res))
+            end
+
+            res, err = red:read_reply()
+            if not res then
+                ngx.say("1: failed to read reply: ", err)
+            else
+                ngx.say("1: receive: ", cjson.encode(res))
+            end
+
+            res, err = red:punsubscribe()
+            if not res then
+                ngx.say("1: failed to unscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            local res, err = red:subscribe("three")
+            if not res then
+                ngx.say("1: failed to subscribe: ", err)
+                return
+            end
+
+            res, err = red2:publish("three", "foo")
+            if not res then
+                ngx.say("2: failed to publish: ", err)
+                return
+            end
+
+            res, err = red2:publish("two", "bar")
+            if not res then
+                ngx.say("2: failed to publish: ", err)
+                return
+            end
+
+            res, err = red:unsubscribe("three")
+            if not res then
+                ngx.say("1: failed to unscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            res, err = red:read_reply()
+            if not res then
+                ngx.say("1: failed to read reply: ", err)
+            else
+                ngx.say("1: receive: ", cjson.encode(res))
+            end
+
+            res, err = red:unsubscribe()
+            if not res then
+                ngx.say("1: failed to unscribe: ", err)
+            else
+                ngx.say("1: unsubscribe: ", cjson.encode(res))
+            end
+
+            red:close()
+            red2:close()
+        }
+--- response_body_like chop
+^1: receive: \["p?message",("two"|"t\*o","two"),"foo"\]
+1: receive: \["p?message",("two"|"t\*o","two"),"foo"\]
+1: unsubscribe: \["punsubscribe","t\*o",1\]
+1: unsubscribe: \["unsubscribe","three",1\]
+1: receive: \["message","two","bar"\]
+1: unsubscribe: \["unsubscribe","two",0\]
+--- no_error_log
+[error]

@@ -1,33 +1,18 @@
 # vim:set ft= ts=4 sw=4 et:
 
-use Test::Nginx::Socket::Lua;
-use Cwd qw(cwd);
+use t::Test;
 
 repeat_each(2);
 
 plan tests => repeat_each() * (3 * blocks());
-
-my $pwd = cwd();
-
-our $HttpConfig = qq{
-    lua_package_path "$pwd/lib/?.lua;;";
-    lua_package_cpath "/usr/local/openresty-debug/lualib/?.so;/usr/local/openresty/lualib/?.so;;";
-};
-
-$ENV{TEST_NGINX_RESOLVER} = '8.8.8.8';
-$ENV{TEST_NGINX_REDIS_PORT} ||= 6379;
-
-no_long_string();
-#no_diff();
 
 run_tests();
 
 __DATA__
 
 === TEST 1: set and get
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -40,7 +25,13 @@ __DATA__
                 return
             end
 
-            res, err = red:set("dog", "an animal")
+            ok, err = red:select(1)
+            if not ok then
+                ngx.say("failed to select: ", err)
+                return
+            end
+
+            local res, err = red:set("dog", "an animal")
             if not res then
                 ngx.say("failed to set dog: ", err)
                 return
@@ -65,9 +56,6 @@ __DATA__
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 set dog: OK
 dog: an animal
@@ -78,9 +66,8 @@ dog: an animal
 
 
 === TEST 2: flushall
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -102,9 +89,6 @@ dog: an animal
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 flushall: OK
 --- no_error_log
@@ -113,9 +97,8 @@ flushall: OK
 
 
 === TEST 3: get nil bulk value
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -153,9 +136,6 @@ flushall: OK
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 flushall: OK
 not_found not found.
@@ -165,9 +145,8 @@ not_found not found.
 
 
 === TEST 4: get nil list
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -205,9 +184,6 @@ not_found not found.
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 flushall: OK
 get nokey: 0 (table)
@@ -218,9 +194,8 @@ get nokey: 0 (table)
 
 
 === TEST 5: incr and decr
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -233,7 +208,7 @@ get nokey: 0 (table)
                 return
             end
 
-            res, err = red:set("connections", 10)
+            local res, err = red:set("connections", 10)
             if not res then
                 ngx.say("failed to set connections: ", err)
                 return
@@ -305,9 +280,6 @@ get nokey: 0 (table)
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 set connections: OK
 incr connections: 11
@@ -323,9 +295,8 @@ connections: 1
 
 
 === TEST 6: bad incr command format
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -338,7 +309,7 @@ connections: 1
                 return
             end
 
-            res, err = red:incr("connections", 12)
+            local res, err = red:incr("connections", 12)
             if not res then
                 ngx.say("failed to set connections: ", res, ": ", err)
                 return
@@ -348,9 +319,6 @@ connections: 1
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 failed to set connections: false: ERR wrong number of arguments for 'incr' command
 --- no_error_log
@@ -359,9 +327,8 @@ failed to set connections: false: ERR wrong number of arguments for 'incr' comma
 
 
 === TEST 7: lpush and lrange
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -405,9 +372,6 @@ failed to set connections: false: ERR wrong number of arguments for 'incr' comma
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 flushall: OK
 lpush result: 1
@@ -419,9 +383,8 @@ lrange result: ["hello","world"]
 
 
 === TEST 8: blpop expires its own timeout
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -457,9 +420,6 @@ lrange result: ["hello","world"]
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 flushall: OK
 no element popped.
@@ -470,9 +430,8 @@ no element popped.
 
 
 === TEST 9: blpop expires cosocket timeout
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -508,9 +467,6 @@ no element popped.
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 flushall: OK
 failed to blpop: timeout
@@ -520,10 +476,9 @@ lua tcp socket read timed out
 
 
 === TEST 10: set keepalive and get reused times
---- http_config eval: $::HttpConfig
---- config
+--- global_config eval: $::GlobalConfig
+--- server_config
     resolver $TEST_NGINX_RESOLVER;
-    location /t {
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -554,9 +509,6 @@ lua tcp socket read timed out
             times = red:get_reused_times()
             ngx.say("reused times: ", times)
         ';
-    }
---- request
-GET /t
 --- response_body
 reused times: 0
 reused times: 1
@@ -566,9 +518,8 @@ reused times: 1
 
 
 === TEST 11: mget
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -587,7 +538,7 @@ reused times: 1
                 return
             end
 
-            res, err = red:set("dog", "an animal")
+            local res, err = red:set("dog", "an animal")
             if not res then
                 ngx.say("failed to set dog: ", err)
                 return
@@ -613,9 +564,6 @@ reused times: 1
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 set dog: OK
 res: ["an animal",null,"an animal"]
@@ -626,9 +574,8 @@ res: ["an animal",null,"an animal"]
 
 
 === TEST 12: hmget array_to_hash
---- http_config eval: $::HttpConfig
---- config
-    location /t {
+--- global_config eval: $::GlobalConfig
+--- server_config
         content_by_lua '
             local redis = require "resty.redis"
             local red = redis:new()
@@ -647,7 +594,7 @@ res: ["an animal",null,"an animal"]
                 return
             end
 
-            res, err = red:hmset("animals", { dog = "bark", cat = "meow", cow = "moo" })
+            local res, err = red:hmset("animals", { dog = "bark", cat = "meow", cow = "moo" })
             if not res then
                 ngx.say("failed to set animals: ", err)
                 return
@@ -682,9 +629,6 @@ res: ["an animal",null,"an animal"]
 
             red:close()
         ';
-    }
---- request
-GET /t
 --- response_body
 hmset animals: OK
 hmget animals: barkmeowmoo
@@ -694,3 +638,414 @@ cow: moo
 --- no_error_log
 [error]
 
+
+
+=== TEST 13: boolean args
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua '
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("failed to connect: ", err)
+                return
+            end
+
+            ok, err = red:set("foo", true)
+            if not ok then
+                ngx.say("failed to set: ", err)
+                return
+            end
+
+            local res, err = red:get("foo")
+            if not res then
+                ngx.say("failed to get: ", err)
+                return
+            end
+
+            ngx.say("foo: ", res, ", type: ", type(res))
+
+            ok, err = red:set("foo", false)
+            if not ok then
+                ngx.say("failed to set: ", err)
+                return
+            end
+
+            local res, err = red:get("foo")
+            if not res then
+                ngx.say("failed to get: ", err)
+                return
+            end
+
+            ngx.say("foo: ", res, ", type: ", type(res))
+
+            ok, err = red:set("foo", nil)
+            if not ok then
+                ngx.say("failed to set: ", err)
+            end
+
+            local res, err = red:get("foo")
+            if not res then
+                ngx.say("failed to get: ", err)
+                return
+            end
+
+            ngx.say("foo: ", res, ", type: ", type(res))
+
+            local ok, err = red:set_keepalive(10, 10)
+            if not ok then
+                ngx.say("failed to set_keepalive: ", err)
+            end
+        ';
+--- response_body
+foo: true, type: string
+foo: false, type: string
+failed to set: ERR wrong number of arguments for 'set' command
+foo: false, type: string
+--- no_error_log
+[error]
+
+
+
+=== TEST 14: set and get (key with underscores)
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua '
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("failed to connect: ", err)
+                return
+            end
+
+            local res, err = red:set("a_dog", "an animal")
+            if not res then
+                ngx.say("failed to set a_dog: ", err)
+                return
+            end
+
+            ngx.say("set a_dog: ", res)
+
+            for i = 1, 2 do
+                local res, err = red:get("a_dog")
+                if err then
+                    ngx.say("failed to get a_dog: ", err)
+                    return
+                end
+
+                if not res then
+                    ngx.say("a_dog not found.")
+                    return
+                end
+
+                ngx.say("a_dog: ", res)
+            end
+
+            red:close()
+        ';
+--- response_body
+set a_dog: OK
+a_dog: an animal
+a_dog: an animal
+--- no_error_log
+[error]
+
+
+
+=== TEST 15: connection refused
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua '
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:set_timeout(10000) -- 10 sec
+
+            local ok, err = red:connect("127.0.0.1", 81)
+            if not ok then
+                ngx.say("failed to connect: ", err)
+                return
+            end
+
+            ngx.say("connected")
+
+            red:close()
+        ';
+--- response_body
+failed to connect: connection refused
+--- timeout: 3
+--- no_error_log
+[alert]
+
+
+
+=== TEST 16: set_timeouts() connect timeout
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:set_timeouts(100, 1000, 1000) -- 0.1 sec
+
+            local ok, err = red:connect("127.0.0.2", 12345)
+            if not ok then
+                ngx.say("failed to connect: ", err)
+            end
+        }
+--- response_body
+failed to connect: timeout
+--- no_error_log
+[alert]
+
+
+
+=== TEST 17: set_timeouts() send timeout
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:set_timeouts(1000, 100, 1000) -- 0.1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("failed to connect: ", err)
+                return
+            end
+
+            local res, err = red:flushall()
+            if not res then
+                ngx.say("failed to flushall: ", err)
+                return
+            end
+
+            ngx.say("flushall: ", res)
+
+            local res, err = red:blpop("key", 1)
+            if err then
+                ngx.say("failed to blpop: ", err)
+            end
+
+            red:close()
+        }
+--- response_body
+flushall: OK
+failed to blpop: timeout
+--- no_error_log
+[alert]
+
+
+
+=== TEST 18: set_timeouts() read timeout
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:set_timeouts(1000, 1000, 100) -- 0.1 sec
+
+            local ok, err = red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT)
+            if not ok then
+                ngx.say("failed to connect: ", err)
+                return
+            end
+
+            local res, err = red:flushall()
+            if not res then
+                ngx.say("failed to flushall: ", err)
+                return
+            end
+
+            ngx.say("flushall: ", res)
+
+            local res, err = red:blpop("key", 1)
+            if err then
+                ngx.say("failed to blpop: ", err)
+            end
+
+            red:close()
+        }
+--- response_body
+flushall: OK
+failed to blpop: timeout
+--- no_error_log
+[alert]
+
+
+
+=== TEST 19: connect() bad host argument (boolean)
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:connect(true)
+        }
+--- internal_server_error
+--- error_log
+bad argument #1 host: string expected, got boolean
+--- no_error_log
+[crit]
+
+
+
+=== TEST 20: connect() bad host argument (nil)
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:connect(nil)
+        }
+--- internal_server_error
+--- error_log
+bad argument #1 host: string expected, got nil
+--- no_error_log
+[crit]
+
+
+
+=== TEST 21: connect() bad port argument (nil)
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:connect("127.0.0.1", nil)
+        }
+--- internal_server_error
+--- error_log
+bad argument #2 port: number expected, got nil
+--- no_error_log
+[crit]
+
+
+
+=== TEST 22: connect() bad port argument (boolean)
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:connect("127.0.0.1", true)
+        }
+--- internal_server_error
+--- error_log
+bad argument #2 port: number expected, got boolean
+--- no_error_log
+[crit]
+
+
+
+=== TEST 23: connect() bad port argument (string)
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:connect("127.0.0.1", "foo")
+        }
+--- internal_server_error
+--- error_log
+bad argument #2 port: number expected, got string
+--- no_error_log
+[crit]
+
+
+
+=== TEST 24: connect() accepts port argument as string
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:set_timeout(1000) -- 1 sec
+
+            local ok, err = red:connect("127.0.0.1", tostring($TEST_NGINX_REDIS_PORT))
+            if not ok then
+                ngx.say("failed to connect: ", err)
+                return
+            end
+
+            ngx.say("ok")
+        }
+--- response_body
+ok
+--- no_error_log
+[error]
+
+
+
+=== TEST 25: connect() bad opts argument
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:connect("127.0.0.1", $TEST_NGINX_REDIS_PORT, true)
+        }
+--- internal_server_error
+--- error_log
+bad argument #3 opts: nil or table expected, got boolean
+--- no_error_log
+[crit]
+
+
+
+=== TEST 26: connect() bad opts argument for unix sockets
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            red:connect("unix:", true)
+        }
+--- internal_server_error
+--- error_log
+bad argument #2 opts: nil or table expected, got boolean
+--- no_error_log
+[crit]
+
+
+
+=== TEST 27: connect() unix socket arguments when 'host' starts with 'unix:'
+--- global_config eval: $::GlobalConfig
+--- server_config
+        content_by_lua_block {
+            local redis = require "resty.redis"
+            local red = redis:new()
+
+            local pok, perr = pcall(red.connect, red, "unix:", true)
+            if not pok then
+                ngx.say(perr)
+            end
+
+            local pok, perr = pcall(red.connect, red, "_unix:", true)
+            if not pok then
+                ngx.say(perr)
+            end
+        }
+--- response_body
+bad argument #2 opts: nil or table expected, got boolean
+bad argument #2 port: number expected, got boolean
+--- no_error_log
+[error]
